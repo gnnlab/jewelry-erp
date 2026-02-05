@@ -1,4 +1,7 @@
 import streamlit as st
+import requests
+import json
+
 import sqlalchemy
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, text
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, joinedload
@@ -7,6 +10,8 @@ import time
 import os
 import math
 from datetime import datetime
+from PIL import Image
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime, Text, text, inspect
 
 # Page Configuration
 st.set_page_config(
@@ -48,13 +53,25 @@ Base = declarative_base()
 IMAGE_DIR = "uploaded_images"
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
+import hashlib
+
 # --- Models ---
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    username = Column(String(50), unique=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(20), default='Biz') # SuperUser, Biz, General
+    shop_name = Column(String(100))
+    shop_code = Column(String(10))
 
 class Product(Base):
     __tablename__ = 'products'
     
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, nullable=True)
+    product_code = Column(String(50), unique=True, nullable=True) # NEW: Shop-aware ID
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True) # Enforce FK
     category = Column(String(50), nullable=False)
     sub_category = Column(String(50), nullable=True) # NEW: Sub-category
     name = Column(String(255), nullable=False)
@@ -65,6 +82,18 @@ class Product(Base):
     image_front = Column(String(500))
     image_side = Column(String(500))
     
+    # Phase 15: Factory Info
+    factory_name = Column(String(100))
+    factory_contact = Column(String(100))
+    factory_contact = Column(String(100))
+    production_time = Column(String(100))
+    
+    # Phase 18: Pricing Fields (Moved from JewelryDetail)
+    labor_cost = Column(Float, default=0.0)
+    margin_percentage = Column(Float, default=0.0)
+    tax_percentage = Column(Float, default=0.0)
+    card_fee_percentage = Column(Float, default=0.0)
+
     total_price = Column(Float, default=0.0)
     stock_quantity = Column(Integer, default=1) 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -222,6 +251,8 @@ class ProductEtc(Base):
     
     product_id = Column(Integer, ForeignKey('products.id'), primary_key=True)
     comments = Column(String(500))
+    material = Column(String(100)) # Phase 17
+    size = Column(String(100)) # Phase 17
     
     # Pricing
     purchase_cost = Column(Integer, default=0)
@@ -314,7 +345,99 @@ def run_migrations():
                 st.toast("Migrating DB: Creating 'product_etc'...", icon="🛠️")
                 pass
             except Exception as e: st.error(f"Migration Failed (Etc): {e}")
+
+        # Check product_code in products (Phase 10 Fix)
+        try: conn.execute(text("SELECT product_code FROM products LIMIT 1"))
+        except Exception:
+            try:
+                st.toast("Migrating DB: Adding 'product_code'...", icon="🛠️")
+                conn.execute(text("ALTER TABLE products ADD COLUMN product_code VARCHAR(50)"))
+                conn.commit()
+            except Exception as e: st.error(f"Migration Failed (product_code): {e}")
             
+        # Check shop_code in users (Phase 10 Fix - just in case)
+        try: conn.execute(text("SELECT shop_code FROM users LIMIT 1"))
+        except Exception:
+            try:
+                st.toast("Migrating DB: Adding 'shop_code' to users...", icon="🛠️")
+                conn.execute(text("ALTER TABLE users ADD COLUMN shop_code VARCHAR(10)"))
+                conn.commit()
+            except Exception as e: st.error(f"Migration Failed (shop_code): {e}")
+            
+        # Phase 15: Add factory_name, factory_contact, production_time to products
+        inspector = inspect(engine)
+        columns = inspector.get_columns('products')
+        column_names = [col['name'] for col in columns]
+
+        if 'factory_name' not in column_names:
+            try:
+                st.toast("Migrating DB: Adding 'factory_name' to products...", icon="🛠️")
+                conn.execute(text("ALTER TABLE products ADD COLUMN factory_name VARCHAR(100)"))
+                conn.commit()
+            except Exception as e: st.error(f"Migration Failed (factory_name): {e}")
+        
+        if 'factory_contact' not in column_names:
+            try:
+                st.toast("Migrating DB: Adding 'factory_contact' to products...", icon="🛠️")
+                conn.execute(text("ALTER TABLE products ADD COLUMN factory_contact VARCHAR(100)"))
+                conn.commit()
+            except Exception as e: st.error(f"Migration Failed (factory_contact): {e}")
+
+        if 'production_time' not in column_names:
+            try:
+                st.toast("Migrating DB: Adding 'production_time' to products...", icon="🛠️")
+                conn.execute(text("ALTER TABLE products ADD COLUMN production_time VARCHAR(100)"))
+                conn.commit()
+            except Exception as e: st.error(f"Migration Failed (production_time): {e}")
+
+        # Phase 17: Add material, size to product_etc
+        etc_columns = inspector.get_columns('product_etc')
+        etc_col_names = [col['name'] for col in etc_columns]
+        
+        if 'material' not in etc_col_names:
+            try:
+                st.toast("Migrating DB: Adding 'material' to product_etc...", icon="🛠️")
+                conn.execute(text("ALTER TABLE product_etc ADD COLUMN material VARCHAR(100)"))
+                conn.commit()
+            except Exception as e: st.error(f"Migration Failed (etc_material): {e}")
+
+        if 'size' not in etc_col_names:
+            try:
+                st.toast("Migrating DB: Adding 'size' to product_etc...", icon="🛠️")
+                conn.execute(text("ALTER TABLE product_etc ADD COLUMN size VARCHAR(100)"))
+                conn.commit()
+            except Exception as e: st.error(f"Migration Failed (etc_size): {e}")
+
+        # Phase 18: Add pricing fields to products
+        if 'labor_cost' not in column_names:
+             try:
+                 st.toast("Migrating DB: Adding 'labor_cost' to products...", icon="🛠️")
+                 conn.execute(text("ALTER TABLE products ADD COLUMN labor_cost FLOAT DEFAULT 0.0"))
+                 conn.commit()
+             except Exception as e: st.error(f"Migration Failed (labor_cost): {e}")
+        
+        if 'margin_percentage' not in column_names:
+             try:
+                 st.toast("Migrating DB: Adding 'margin_percentage' to products...", icon="🛠️")
+                 conn.execute(text("ALTER TABLE products ADD COLUMN margin_percentage FLOAT DEFAULT 0.0"))
+                 conn.commit()
+             except Exception as e: st.error(f"Migration Failed (margin_percentage): {e}")
+
+        if 'tax_percentage' not in column_names:
+             try:
+                 st.toast("Migrating DB: Adding 'tax_percentage' to products...", icon="🛠️")
+                 conn.execute(text("ALTER TABLE products ADD COLUMN tax_percentage FLOAT DEFAULT 0.0"))
+                 conn.commit()
+             except Exception as e: st.error(f"Migration Failed (tax_percentage): {e}")
+
+        if 'card_fee_percentage' not in column_names:
+             try:
+                 st.toast("Migrating DB: Adding 'card_fee_percentage' to products...", icon="🛠️")
+                 conn.execute(text("ALTER TABLE products ADD COLUMN card_fee_percentage FLOAT DEFAULT 0.0"))
+                 conn.commit()
+             except Exception as e: st.error(f"Migration Failed (card_fee_percentage): {e}")
+
+
     # Initial Data for Categories
     Session = sessionmaker(bind=engine)
     session = Session()
@@ -335,15 +458,269 @@ run_migrations()
 
 # --- Helper Functions ---
 
+@st.cache_data(ttl=1800)
+def fetch_gold_price():
+    """
+    Fetches the current gold price from DiamondBank API.
+    Refreshes every 30 minutes (1800 seconds).
+    Returns the price per Don (aukd) as an integer.
+    """
+    url = "http://api.diamondbank.co.kr/outAPI.php"
+    
+    # 1. Add User-Agent header to avoid being blocked
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+    }
+    
+    # 2. Correct POST parameter as per user confirmation
+    payload = {'key': 'limit'} 
+    
+    try:
+        response = requests.post(url, data=payload, headers=headers, timeout=5)
+        
+        # Raise error for bad status codes
+        response.raise_for_status() 
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Flexible extraction
+            target_item = None
+            if isinstance(data, list) and len(data) > 0:
+                target_item = data[0]
+            elif isinstance(data, dict):
+                target_item = data
+            
+            if target_item and 'aukd' in target_item:
+                # Remove commas if present and convert to int
+                raw_price = str(target_item['aukd']).replace(',', '')
+                return int(raw_price)
+                
+    except Exception as e:
+        # Show specific error in UI for debugging
+        st.error(f"⚠️ Gold Price Fetch Error: {e}")
+        return None
+    
+    return None
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def init_db_data():
+    session = get_db_session()
+    # Check if SuperUser exists
+    admin = session.query(User).filter_by(username='admin').first()
+    if not admin:
+        # Create Default SuperUser
+        admin_user = User(
+            username='admin',
+            password_hash=hash_password('1234'),
+            role='SuperUser',
+            shop_name='Master Shop',
+            shop_code='MT'
+        )
+        session.add(admin_user)
+        session.commit()
+        print("Initialized SuperUser: admin / 1234")
+    session.close()
+
+def run_data_migration():
+    """
+    Migration Tool: Transfers ALL logic to 'diamondbank' and regenerates Product IDs.
+    """
+    session = get_db_session()
+    try:
+        # 1. Target User
+        target_user = session.query(User).filter_by(username='diamondbank').first()
+        if not target_user:
+            st.error("Target user 'diamondbank' not found!")
+            return
+
+        shop_code = target_user.shop_code # Should be 'DB'
+        
+        # 2. Fetch ALL products sorted by created_at
+        products = session.query(Product).order_by(Product.created_at.asc()).all()
+        
+        if not products:
+            st.warning("No products to migrate.")
+            return
+
+        # 3. Processing
+        count = 0
+        
+        # Sequence Tracker for regenerating IDs: {(cat_char, date_str): seq}
+        seq_tracker = {} 
+        
+        cat_map = {"Jewelry": "J", "Gold": "G", "Watch": "W", "Dia/Stone": "D", "ColorStone": "C", "Etc": "E"}
+
+        for p in products:
+            # Transfer Ownership
+            p.user_id = target_user.id
+            
+            # Regenerate ID
+            cat_char = cat_map.get(p.category, "X")
+            date_str = p.created_at.strftime("%y%m%d")
+            
+            key = (cat_char, date_str)
+            if key not in seq_tracker:
+                seq_tracker[key] = 0
+            
+            seq_tracker[key] += 1
+            seq = seq_tracker[key]
+            
+            new_code = f"{shop_code}-{cat_char}{date_str}-{seq:03d}"
+            p.product_code = new_code
+            
+            count += 1
+            
+        session.commit()
+        st.toast(f"Migration Complete! Moved {count} products to {target_user.shop_name}.", icon="🚀")
+        st.sidebar.success(f"Migrated {count} items!")
+        time.sleep(2)
+        st.rerun()
+        
+    except Exception as e:
+        session.rollback()
+        st.error(f"Migration Failed: {e}")
+    finally:
+        session.close()
+
+def login_user(username, password):
+    session = get_db_session()
+    hashed_pw = hash_password(password)
+    user = session.query(User).filter_by(username=username, password_hash=hashed_pw).first()
+    session.close()
+    return user
+
+def show_login_page():
+    # Centered Login Box
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        st.title("💎 Jewelry ERP Login")
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Login", type="primary", use_container_width=True)
+            
+            if submitted:
+                user = login_user(username, password)
+                if user:
+                    st.success(f"Welcome back, {user.username}!")
+                    # Set Session State
+                    st.session_state['logged_in'] = True
+                    st.session_state['user_id'] = user.id
+                    st.session_state['user_name'] = user.username
+                    st.session_state['user_role'] = user.role
+                    st.session_state['shop_code'] = user.shop_code
+                    st.session_state['shop_name'] = user.shop_name
+                    st.rerun()
+                else:
+                    st.error("Invalid Username or Password")
+
+def logout_user():
+    keys = ['logged_in', 'user_id', 'user_name', 'user_role', 'shop_code', 'shop_name']
+    for k in keys:
+        if k in st.session_state: del st.session_state[k]
+    st.rerun()
+
+
+
 def save_uploaded_file(uploaded_file, prefix):
     if uploaded_file is not None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{prefix}_{timestamp}_{uploaded_file.name}"
-        filepath = os.path.join(IMAGE_DIR, filename)
-        with open(filepath, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        return filepath
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{prefix}_{timestamp}_{uploaded_file.name}"
+            filepath = os.path.join(IMAGE_DIR, filename)
+
+            # --- Phase 13-2: Force Maximize Logic ---
+            image = Image.open(uploaded_file)
+            
+            # 1. Create White Background (500x500)
+            final_size = (500, 500)
+            new_img = Image.new("RGB", final_size, (255, 255, 255))
+            
+            # 2. Resize Logic (Force Maximize)
+            w, h = image.size
+            if w > h:
+                new_w = 500
+                new_h = int(500 * (h / w))
+            else: 
+                new_h = 500
+                new_w = int(500 * (w / h))
+            
+            # Resize with LANCZOS for quality
+            image_resized = image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            
+            # 3. Calculate Center Position
+            x = (500 - new_w) // 2
+            y = (500 - new_h) // 2
+            
+            # 4. Paste Image onto Background
+            new_img.paste(image_resized, (x, y))
+            
+            # 5. Save Final Image
+            new_img.save(filepath)
+            
+            return filepath
+        except Exception as e:
+            st.error(f"Error processing image: {e}")
+            return None
     return None
+
+def normalize_existing_images():
+    """
+    Retroactively applies 500x500 square padding to ALL images in IMAGE_DIR.
+    Uses 'Force Maximize' logic with LANCZOS resampling.
+    """
+    if not os.path.exists(IMAGE_DIR):
+        return 0
+    
+    count = 0
+    progress_bar = st.progress(0)
+    files = [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    total = len(files)
+    
+    for i, filename in enumerate(files):
+        try:
+            filepath = os.path.join(IMAGE_DIR, filename)
+            
+            # Open & Process
+            with Image.open(filepath) as img:
+                img = img.convert("RGB") # Ensure RGB
+                
+                # --- Phase 13-2: Force Maximize Logic ---
+                final_size = (500, 500)
+                new_img = Image.new("RGB", final_size, (255, 255, 255))
+                
+                # Calculate New Dimensions (Force Maximize)
+                w, h = img.size
+                if w > h:
+                    new_w = 500
+                    new_h = int(500 * (h / w))
+                else: 
+                    new_h = 500
+                    new_w = int(500 * (w / h))
+                    
+                # Resize with High Quality
+                img_resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                
+                # Center
+                x = (500 - new_w) // 2
+                y = (500 - new_h) // 2
+                
+                new_img.paste(img_resized, (x, y))
+                
+                # Overwrite
+                new_img.save(filepath)
+                count += 1
+                
+            progress_bar.progress((i + 1) / total)
+            
+        except Exception as e:
+            print(f"Failed to process {filename}: {e}")
+            
+    progress_bar.empty()
+    return count
 
 def format_currency(value):
     return f"{value:,.0f} KRW"
@@ -406,8 +783,19 @@ def show_register_page():
     e_margin = 0.0
     e_vat = 0.0
     e_tax = 0.0
+    e_tax = 0.0
     final_price_e = 0
     
+    # Define Lists FIRST (Fix UnboundLocalError)
+    stone_types = ["None", "Diamond", "Ruby", "Sapphire", "Emerald", "Pearl", "Cubic Zirconia", "Direct Input"]
+    
+    # Initialize variables to prevent UnboundLocalError
+    w_brand = w_model = w_year = w_size = w_movement = w_material = w_color = w_band = w_cert = w_case = w_status = ""
+    d_weight, d_color, d_clarity, d_cert, d_shape, d_cut, d_polish, d_symmetry, d_fluo = 0.0, "F", "VS1", "GIA", "Round", "Excellent", "Excellent", "Excellent", "None"
+    c_weight, c_color, c_type, c_cert, c_shape, c_tone, c_sat, c_clarity, c_origin, c_comment = 0.0, "Red", "Ruby", "", "Oval", "Medium", "Strong", "Eye Clean", "Burma", ""
+    e_material, e_size, e_comments = "", "", ""
+    final_price_w = final_price_dia = final_price_cs = final_price_e = 0
+
     # --- Edit Mode Pre-fill Logic ---
     edit_mode_id = st.session_state.get('edit_mode_id')
     
@@ -426,50 +814,55 @@ def show_register_page():
             st.session_state['reg_img_top'] = product.image_top
             st.session_state['reg_img_front'] = product.image_front
             st.session_state['reg_img_side'] = product.image_side
+
+            # Phase 15: Factory Info (Force String)
+            st.session_state['reg_factory_name'] = str(product.factory_name) if product.factory_name else ""
+            st.session_state['reg_factory_contact'] = str(product.factory_contact) if product.factory_contact else ""
+            st.session_state['reg_production_time'] = str(product.production_time) if product.production_time else ""
             
             if product.jewelry_details:
                 jd = product.jewelry_details
                 st.session_state['reg_gold_purity'] = jd.gold_purity
-                st.session_state['reg_gold_weight'] = jd.gold_weight
-                st.session_state['reg_gold_price_applied'] = jd.gold_price_applied
-                st.session_state['reg_labor'] = jd.labor_cost
-                st.session_state['reg_margin'] = jd.margin_pct
-                st.session_state['reg_discount'] = jd.discount_pct
-                st.session_state['reg_vat'] = jd.vat_pct
-                st.session_state['reg_fee'] = jd.fee_pct
+                st.session_state['reg_gold_weight'] = float(jd.gold_weight)
+                st.session_state['reg_gold_price_applied'] = int(jd.gold_price_applied)
+                st.session_state['reg_labor'] = int(jd.labor_cost)
+                st.session_state['reg_margin'] = float(jd.margin_pct)
+                st.session_state['reg_discount'] = float(jd.discount_pct)
+                st.session_state['reg_vat'] = float(jd.vat_pct)
+                st.session_state['reg_fee'] = float(jd.fee_pct)
 
             if product.diamond_details:
                 dd = product.diamond_details
                 st.session_state['dia_type'] = dd.stone_type
                 st.session_state['dia_cert'] = dd.certificate
                 st.session_state['dia_shape'] = dd.shape
-                st.session_state['dia_weight'] = dd.weight
+                st.session_state['dia_weight'] = float(dd.weight)
                 st.session_state['dia_color'] = dd.color
                 st.session_state['dia_clarity'] = dd.clarity
                 st.session_state['dia_cut'] = dd.cut
                 st.session_state['dia_polish'] = dd.polish
                 st.session_state['dia_symmetry'] = dd.symmetry
                 st.session_state['dia_fluo'] = dd.fluorescence
-                st.session_state['dia_cost'] = dd.purchase_cost
-                st.session_state['dia_margin'] = dd.margin_pct
-                st.session_state['dia_vat'] = dd.vat_pct
+                st.session_state['dia_cost'] = int(dd.purchase_cost)
+                st.session_state['dia_margin'] = float(dd.margin_pct)
+                st.session_state['dia_vat'] = float(dd.vat_pct)
 
             if product.color_stone_details:
                 cs = product.color_stone_details
                 st.session_state['cs_type'] = cs.stone_type
                 st.session_state['cs_cert'] = cs.cert_agency
                 st.session_state['cs_shape'] = cs.shape
-                st.session_state['cs_weight'] = cs.weight
+                st.session_state['cs_weight'] = float(cs.weight)
                 st.session_state['cs_color'] = cs.color
                 st.session_state['cs_tone'] = cs.tone
                 st.session_state['cs_sat'] = cs.saturation
                 st.session_state['cs_clarity'] = cs.clarity
                 st.session_state['cs_origin'] = cs.origin
                 st.session_state['cs_comment'] = cs.comment
-                st.session_state['cs_cost'] = cs.purchase_cost
-                st.session_state['cs_margin'] = cs.margin_pct
-                st.session_state['cs_vat'] = cs.vat_pct
-                st.session_state['cs_tax'] = cs.tax_rate
+                st.session_state['cs_cost'] = int(cs.purchase_cost)
+                st.session_state['cs_margin'] = float(cs.margin_pct)
+                st.session_state['cs_vat'] = float(cs.vat_pct)
+                st.session_state['cs_tax'] = float(cs.tax_rate)
 
             if product.watch_details:
                 wd = product.watch_details
@@ -484,26 +877,68 @@ def show_register_page():
                 st.session_state['w_cert'] = wd.has_cert
                 st.session_state['w_case'] = wd.has_case
                 st.session_state['w_status'] = wd.status
-                st.session_state['w_cost'] = wd.purchase_cost
-                st.session_state['w_margin'] = wd.margin_pct
-                st.session_state['w_vat'] = wd.vat_pct
-                st.session_state['w_tax'] = wd.tax_pct
+                st.session_state['w_cost'] = int(wd.purchase_cost)
+                st.session_state['w_margin'] = float(wd.margin_pct)
+                st.session_state['w_vat'] = float(wd.vat_pct)
+                st.session_state['w_tax'] = float(wd.tax_pct)
 
             if product.etc_details:
                 ed = product.etc_details
-                st.session_state['e_name'] = product.name # Name handles itself but just in case
+                st.session_state['e_name'] = product.name
                 st.session_state['e_stock'] = product.stock_quantity
                 st.session_state['e_comments'] = ed.comments
-                st.session_state['e_cost'] = ed.purchase_cost
-                st.session_state['e_margin'] = ed.margin_pct
-                st.session_state['e_vat'] = ed.vat_pct
-                st.session_state['e_tax'] = ed.tax_pct
+                st.session_state['e_cost'] = int(ed.purchase_cost)
+                st.session_state['e_margin'] = float(ed.margin_pct)
+                st.session_state['e_vat'] = float(ed.vat_pct)
+                st.session_state['e_tax'] = float(ed.tax_pct)
+                st.session_state['e_tax'] = float(ed.tax_pct)
+                # Phase 17: Load Material/Size
+                st.session_state['e_material'] =  getattr(ed, 'material', "")
+                st.session_state['e_size'] = getattr(ed, 'size', "")
+                
+            # [최종 수정] 장부 이름을 'ProductJewelry'로 정정하여 조회
+            # 1. 현재 제품 ID로 저장된 금/보석 정보(ProductJewelry 테이블)를 직접 조회
+            saved_gold = session.query(ProductJewelry).filter(ProductJewelry.product_id == product.id).first()
+
+            # 2. 정보가 있으면 가져옵니다. (속성 이름도 기존 DB에 맞춰 gold_weight로 통일)
+            if saved_gold:
+                st.session_state['reg_gold_purity'] = saved_gold.gold_purity
+                st.session_state['reg_gold_weight'] = float(saved_gold.gold_weight)
+                st.session_state['reg_gold_price_applied'] = int(saved_gold.gold_price_applied or 0)
+            
+            # Phase 18: Load Pricing from Product (fallback to JD if needed)
+            if product.labor_cost is not None and product.labor_cost > 0:
+                 st.session_state['reg_labor'] = int(product.labor_cost)
+            elif product.jewelry_details:
+                 st.session_state['reg_labor'] = int(product.jewelry_details.labor_cost)
+                 
+            if product.margin_percentage: st.session_state['reg_margin'] = float(product.margin_percentage)
+            elif product.jewelry_details: st.session_state['reg_margin'] = float(product.jewelry_details.margin_pct)
+            
+            if product.tax_percentage: st.session_state['reg_vat'] = float(product.tax_percentage)
+            elif product.jewelry_details: st.session_state['reg_vat'] = float(product.jewelry_details.vat_pct)
+            
+            if product.card_fee_percentage: st.session_state['reg_fee'] = float(product.card_fee_percentage)
+            elif product.jewelry_details: st.session_state['reg_fee'] = float(product.jewelry_details.fee_pct)
+
+            
+            # --- Universal Data Rehydration (Fix for Watch/Etc Name) ---
+            # Ensure name/stock is pre-filled for ALL category specific keys
+            st.session_state['w_name'] = product.name
+            st.session_state['e_name'] = product.name
+            st.session_state['cs_name'] = product.name
+            st.session_state['dia_name'] = product.name
+            st.session_state['w_stock'] = product.stock_quantity
+            st.session_state['e_stock'] = product.stock_quantity
+            st.session_state['cs_stock'] = product.stock_quantity
+            st.session_state['dia_stock'] = product.stock_quantity
 
             m_stones = []
             s_stones = []
             if product.stones:
                 for s in product.stones:
-                    s_data = {'name': s.name, 'qty': s.quantity, 'price': s.unit_price}
+                    # Casting qty/price safely
+                    s_data = {'name': s.name, 'qty': int(s.quantity), 'price': int(s.unit_price)}
                     if s.stone_type == "Main": m_stones.append(s_data)
                     elif s.stone_type == "Sub": s_stones.append(s_data)
             
@@ -512,12 +947,30 @@ def show_register_page():
             
             st.session_state.main_stones = m_stones
             st.session_state.sub_stones = s_stones
+            
+            # --- FIX: Explicitly set Widget Keys for Stones to ensure pre-fill ---
+            # Main Stones
+            for i, stone in enumerate(m_stones):
+                 st.session_state[f"ms_qty_{i}"] = stone['qty']
+                 st.session_state[f"ms_price_{i}"] = stone['price']
+                 st.session_state[f"ms_type_{i}"] = stone_types.index(stone['name']) if stone['name'] in stone_types else 0
+                 if stone['name'] not in stone_types:
+                     st.session_state[f"ms_manual_{i}"] = stone['name']
+
+            # Sub Stones
+            for i, stone in enumerate(s_stones):
+                 st.session_state[f"ss_qty_{i}"] = stone['qty']
+                 st.session_state[f"ss_price_{i}"] = stone['price']
+                 st.session_state[f"ss_type_{i}"] = stone_types.index(stone['name']) if stone['name'] in stone_types else 0
+                 if stone['name'] not in stone_types:
+                     st.session_state[f"ss_manual_{i}"] = stone['name']
+
             st.session_state['data_loaded'] = True
             st.rerun()
 
     if not edit_mode_id and 'data_loaded' in st.session_state:
          del st.session_state['data_loaded']
-         keys_to_clear = ['reg_name', 'reg_stock', 'reg_category', 'reg_subcategory', 'reg_gold_weight', 'reg_gold_price_applied', 'reg_labor', 'reg_margin', 'reg_discount', 'reg_vat', 'reg_fee', 'reg_img_rep', 'reg_img_top', 'reg_img_front', 'reg_img_side', 'dia_name', 'dia_type', 'dia_cert', 'dia_shape', 'dia_weight', 'dia_color', 'dia_clarity', 'dia_cut', 'dia_polish', 'dia_symmetry', 'dia_fluo', 'dia_cost', 'dia_margin', 'dia_vat']
+         keys_to_clear = ['reg_name', 'reg_stock', 'reg_category', 'reg_subcategory', 'reg_gold_weight', 'reg_gold_price_applied', 'reg_labor', 'reg_margin', 'reg_discount', 'reg_vat', 'reg_fee', 'reg_img_rep', 'reg_img_top', 'reg_img_front', 'reg_img_side', 'dia_name', 'dia_type', 'dia_cert', 'dia_shape', 'dia_weight', 'dia_color', 'dia_clarity', 'dia_cut', 'dia_polish', 'dia_symmetry', 'dia_fluo', 'dia_cost', 'dia_margin', 'dia_vat', 'reg_factory_name', 'reg_factory_contact', 'reg_production_time']
          for k in keys_to_clear:
              if k in st.session_state: del st.session_state[k]
          st.session_state.main_stones = [{'name': '', 'qty': 0, 'price': 0}]
@@ -533,6 +986,82 @@ def show_register_page():
         submit_label = "✅ Register Product"
         
     st.markdown("---")
+
+    def render_gold_stone_inputs():
+        st.subheader("2. Materials (Gold & Stones)")
+        g_col1, g_col2 = st.columns(2)
+        with g_col1:
+            purity_options = ["24K", "18K", "14K", "PT", "Silver", "Etc"]
+            current_purity = st.session_state.get('reg_gold_purity', '18K')
+            default_idx = 1
+            if not edit_mode_id and product_type == "Gold": default_idx = 0
+            if current_purity in purity_options: default_idx = purity_options.index(current_purity)
+            elif current_purity: default_idx = purity_options.index("Etc")
+
+            purity_sel = st.selectbox("Gold Purity", purity_options, index=default_idx, key="reg_gold_purity_sel")
+            if purity_sel == "Etc":
+                custom_val = current_purity if current_purity not in purity_options else ""
+                gold_purity = st.text_input("Enter Material Name", value=custom_val, key="reg_gold_purity_manual")
+            else: gold_purity = purity_sel
+            st.session_state['reg_gold_purity'] = gold_purity
+        with g_col2:
+            gold_weight = st.number_input("Gold Weight (g)", min_value=0.0, format="%.2f", key="reg_gold_weight")
+            
+            # Dynamic Price Label
+            multiplier = 1.0
+            price_label = "Today's Pure Gold (24K) Price (per Don)"
+            if gold_purity == "18K": multiplier = 0.825
+            elif gold_purity == "14K": multiplier = 0.6435
+            elif gold_purity == "PT": price_label = "Today's Platinum Price (per Don)"
+            elif gold_purity == "Silver": price_label = "Today's Silver Price (per Don)"
+            
+            current_applied_per_g = st.session_state.get('reg_gold_price_applied', 380000)
+            try: approx_base_don = int((current_applied_per_g * 3.75) / multiplier)
+            except: approx_base_don = 450000
+            if 'reg_base_price_don' not in st.session_state: st.session_state['reg_base_price_don'] = approx_base_don
+
+            base_price_don = st.number_input(price_label, min_value=0, value=st.session_state['reg_base_price_don'], step=1000, key="reg_base_price_don_input")
+            st.session_state['reg_base_price_don'] = base_price_don 
+            applied_price_don = base_price_don * multiplier
+            gold_price_applied = math.floor((applied_price_don / 3.75) / 100) * 100
+            st.caption(f"≈ {format_currency(gold_price_applied)} / g (Stored)")
+            st.session_state['reg_gold_price_applied'] = gold_price_applied
+        
+        st.markdown("**Stones Details**")
+        def stone_input_row(prefix, index, obj):
+            c1, c2, c3 = st.columns([2, 1, 1])
+            with c1:
+                current_name = obj['name']
+                current_type = "None"
+                manual_text = ""
+                if current_name in stone_types: current_type = current_name
+                elif current_name: current_type = "Direct Input"; manual_text = current_name
+                sel_type = st.selectbox(f"Type {index+1}", stone_types, index=stone_types.index(current_type) if current_type in stone_types else 0, key=f"{prefix}_type_{index}")
+                final_name = st.text_input(f"Name {index+1}", value=manual_text, key=f"{prefix}_manual_{index}") if sel_type == "Direct Input" else sel_type
+                st.session_state[prefix == "ms" and "main_stones" or "sub_stones"][index]['name'] = final_name
+            with c2: st.session_state[prefix == "ms" and "main_stones" or "sub_stones"][index]['qty'] = st.number_input(f"Qty", min_value=0, value=obj['qty'], key=f"{prefix}_qty_{index}")
+            with c3: st.session_state[prefix == "ms" and "main_stones" or "sub_stones"][index]['price'] = st.number_input(f"Price", min_value=0, step=1000, value=obj['price'], key=f"{prefix}_price_{index}")
+
+        st.caption("Main Stones")
+        for i, stone in enumerate(st.session_state.main_stones): stone_input_row("ms", i, stone)
+        m_btn_c1, m_btn_c2 = st.columns([1, 5])
+        with m_btn_c1: st.button("➕ Add", on_click=add_main_stone, key='add_main_btn')
+        with m_btn_c2: st.button("➖ Remove", on_click=remove_main_stone, key='remove_main_btn')
+        
+        st.caption("Sub Stones")
+        for i, stone in enumerate(st.session_state.sub_stones): stone_input_row("ss", i, stone)
+        s_btn_c1, s_btn_c2 = st.columns([1, 5])
+        with s_btn_c1: st.button("➕ Add", on_click=add_sub_stone, key='add_sub_btn')
+        with s_btn_c2: st.button("➖ Remove", on_click=remove_sub_stone, key='remove_sub_btn')
+        
+        # Return calculated costs for display/logic if needed
+        g_cost = gold_weight * gold_price_applied
+        s_cost = sum([s['qty'] * s['price'] for s in st.session_state.main_stones]) + sum([s['qty'] * s['price'] for s in st.session_state.sub_stones])
+        return g_cost, s_cost
+
+    # Initialize Pricing & Cost Variables (Unified)
+    labor_cost, margin_pct, discount_pct, vat_pct, fee_pct, tax_pct = 0, 0, 0, 0, 0, 0
+    gold_cost, stone_cost = 0, 0
 
     col_main_cat, col_sub_cat = st.columns(2)
     with col_main_cat:
@@ -560,7 +1089,7 @@ def show_register_page():
         
         sub_category = st.selectbox("Sub Category", sub_cat_options, index=default_sub_idx, key="reg_subcategory_input")
 
-    if product_type in ["Jewelry", "Gold", "Etc"]:
+    if product_type in ["Jewelry", "Gold"]:
         st.subheader("1. Basic Info & Images")
         
         c1, c2, c3 = st.columns([2, 1, 1])
@@ -571,7 +1100,16 @@ def show_register_page():
         with c3:
             stock_qty = st.number_input("Stock Quantity", min_value=0, value=1, step=1, key="reg_stock")
             
-        st.markdown("**Product Images**")
+        # Phase 15: Factory Info Inputs
+        st.markdown("---")
+        st.subheader("Factory Information (Optional)")
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1: factory_name = st.text_input("🏭 Factory Name", key='reg_factory_name', placeholder="e.g. Gold Smith Co.")
+        with fc2: factory_contact = st.text_input("📞 Factory Contact", key='reg_factory_contact', placeholder="e.g. 010-9999-8888")
+        with fc3: production_time = st.text_input("⏱️ Production Time", key='reg_production_time', placeholder="e.g. 7-10 days")
+
+        st.markdown("---")
+        st.subheader("Product Images")
         if edit_mode_id: st.caption("Upload new images to replace existing ones.")
         
         img_col1, img_col2, img_col3, img_col4 = st.columns(4)
@@ -595,164 +1133,7 @@ def show_register_page():
             img_side = st.file_uploader("Side View", type=['png', 'jpg', 'jpeg'])
 
         st.markdown("---")
-        st.subheader("2. Materials")
-        
-        g_col1, g_col2 = st.columns(2)
-        with g_col1:
-            purity_options = ["24K", "18K", "14K", "PT", "Silver", "Etc"]
-            
-            # Helper to handle pre-filled custom values
-            current_purity = st.session_state.get('reg_gold_purity', '18K')
-            
-            # Default logic: If new product and category is Gold, default to 24K. Else default to 18K (index 1)
-            default_idx = 1
-            if not edit_mode_id and product_type == "Gold":
-                 default_idx = 0 # 24K
-                 
-            if current_purity in purity_options:
-                default_idx = purity_options.index(current_purity)
-            elif current_purity: # Custom value exists
-                default_idx = purity_options.index("Etc")
 
-            purity_sel = st.selectbox("Gold Purity", purity_options, index=default_idx, key="reg_gold_purity_sel")
-            
-            if purity_sel == "Etc":
-                custom_val = current_purity if current_purity not in purity_options else ""
-                gold_purity = st.text_input("Enter Material Name", value=custom_val, key="reg_gold_purity_manual")
-            else:
-                gold_purity = purity_sel
-            
-            # Sync to session state for persistence
-            st.session_state['reg_gold_purity'] = gold_purity
-        with g_col2:
-            gold_weight = st.number_input("Gold Weight (g)", min_value=0.0, format="%.2f", key="reg_gold_weight")
-            
-            # Determine Multiplier & Label
-            multiplier = 1.0
-            price_label = "Today's Pure Gold (24K) Price (per Don)"
-            
-            if gold_purity == "18K":
-                multiplier = 0.825
-            elif gold_purity == "14K":
-                multiplier = 0.6435
-            elif gold_purity == "PT":
-                price_label = "Today's Platinum Price (per Don)"
-            elif gold_purity == "Silver":
-                price_label = "Today's Silver Price (per Don)"
-                
-            # Gold Price (Don System) - Input BASE Price
-            # If editing, we need to reverse calc the base price from the applied per-gram price
-            # But simpler to just store/recall the Base Don Price in session? 
-            # For now, let's use the current 'reg_gold_price_don' if set, else approximate from applied.
-            
-            current_applied_per_g = st.session_state.get('reg_gold_price_applied', 380000)
-            # Reverse engineer default base don price for initial load
-            try:
-                approx_base_don = int((current_applied_per_g * 3.75) / multiplier)
-            except:
-                approx_base_don = 450000
-
-            # If we already have a manual input in session, respect it
-            if 'reg_base_price_don' not in st.session_state:
-                st.session_state['reg_base_price_don'] = approx_base_don
-
-            base_price_don = st.number_input(price_label, min_value=0, value=st.session_state['reg_base_price_don'], step=1000, key="reg_base_price_don_input")
-            st.session_state['reg_base_price_don'] = base_price_don # Keep sync
-            
-            # Logic: Applied Price per Don = Base * Multiplier
-            applied_price_don = base_price_don * multiplier
-            
-            # Logic: Per Gram (for storage consistency) = math.floor((Applied Don / 3.75) / 100) * 100
-            gold_price_applied = math.floor((applied_price_don / 3.75) / 100) * 100
-            
-            if multiplier != 1.0:
-                st.caption(f"ℹ️ Applied ({multiplier}): {format_currency(applied_price_don)} / don")
-            st.caption(f"≈ {format_currency(gold_price_applied)} / g (Stored)")
-            
-            # Update session state for calculation & saving
-            st.session_state['reg_gold_price_applied'] = gold_price_applied
-            
-        st.markdown("**Stones Details**")
-        
-        stone_types = ["None", "Diamond", "Ruby", "Sapphire", "Emerald", "Pearl", "Cubic Zirconia", "Direct Input"]
-        
-        def stone_input_row(prefix, index, obj):
-            c1, c2, c3 = st.columns([2, 1, 1])
-            with c1:
-                # Resolve current name to type + text
-                current_name = obj['name']
-                current_type = "None" # Default
-                manual_text = ""
-                
-                if current_name in stone_types:
-                    current_type = current_name
-                elif current_name: # Something else
-                    current_type = "Direct Input"
-                    manual_text = current_name
-                    
-                sel_type = st.selectbox(f"Type {index+1}", stone_types, index=stone_types.index(current_type) if current_type in stone_types else 0, key=f"{prefix}_type_{index}")
-                
-                final_name = sel_type
-                if sel_type == "Direct Input":
-                    final_name = st.text_input(f"Name {index+1}", value=manual_text, placeholder="Type stone name", key=f"{prefix}_manual_{index}")
-                    
-                # Update Session State Immediately for persistence
-                st.session_state[prefix == "ms" and "main_stones" or "sub_stones"][index]['name'] = final_name
-                
-            with c2:
-                st.session_state[prefix == "ms" and "main_stones" or "sub_stones"][index]['qty'] = st.number_input(f"Qty", min_value=0, value=obj['qty'], key=f"{prefix}_qty_{index}")
-            with c3:
-                st.session_state[prefix == "ms" and "main_stones" or "sub_stones"][index]['price'] = st.number_input(f"Price", min_value=0, step=1000, value=obj['price'], key=f"{prefix}_price_{index}")
-
-        st.caption("Main Stones")
-        for i, stone in enumerate(st.session_state.main_stones):
-             stone_input_row("ms", i, stone)
-
-        m_btn_c1, m_btn_c2 = st.columns([1, 5])
-        with m_btn_c1: st.button("➕ Add", on_click=add_main_stone, key='add_main_btn')
-        with m_btn_c2: st.button("➖ Remove", on_click=remove_main_stone, key='remove_main_btn')
-            
-        st.caption("Sub Stones")
-        for i, stone in enumerate(st.session_state.sub_stones):
-             stone_input_row("ss", i, stone)
-
-        s_btn_c1, s_btn_c2 = st.columns([1, 5])
-        with s_btn_c1: st.button("➕ Add", on_click=add_sub_stone, key='add_sub_btn')
-        with s_btn_c2: st.button("➖ Remove", on_click=remove_sub_stone, key='remove_sub_btn')
-
-        st.markdown("---")
-        st.subheader("3. Pricing Factors")
-        
-        p_col1, p_col2, p_col3 = st.columns(3)
-        with p_col1: labor_cost = st.number_input("Labor Cost (RW)", min_value=0, step=5000, key="reg_labor")
-        with p_col2: margin_pct = st.number_input("Margin (%)", min_value=0.0, value=10.0, key="reg_margin")
-        with p_col3: discount_pct = st.number_input("Discount (%)", min_value=0.0, value=0.0, key="reg_discount")
-            
-        p_col4, p_col5 = st.columns(2)
-        with p_col4: vat_pct = st.number_input("VAT (%)", min_value=0.0, value=10.0, key="reg_vat")
-        with p_col5: fee_pct = st.number_input("Fee (%)", min_value=0.0, value=3.0, key="reg_fee")
-
-        # Calculations
-        gold_cost = gold_weight * gold_price_applied
-        stone_cost = 0
-        for s in st.session_state.main_stones: stone_cost += (s['qty'] * s['price'])
-        for s in st.session_state.sub_stones: stone_cost += (s['qty'] * s['price'])
-            
-        product_cost = gold_cost + stone_cost + labor_cost
-        selling_price = product_cost * (1 + margin_pct/100)
-        expected_profit = selling_price - product_cost
-        
-        vat_amount = selling_price * (vat_pct / 100)
-        fee_amount = selling_price * (fee_pct / 100)
-        final_price = selling_price + vat_amount + fee_amount
-        
-        st.markdown("### 💰 Price Preview")
-        calc_col1, calc_col2, calc_col3, calc_col4 = st.columns(4)
-        calc_col1.metric("Product Cost", format_currency(product_cost))
-        calc_col2.metric("Expected Profit (Margin)", format_currency(expected_profit), delta_color="normal")
-        calc_col3.metric("Selling Price", format_currency(selling_price))
-        calc_col4.metric("Final Price", format_currency(final_price), delta_color="normal")
-        
         st.markdown("---")
         
     elif product_type == "Dia/Stone":
@@ -766,6 +1147,14 @@ def show_register_page():
             d_type = st.selectbox("Stone Type", ["Natural", "Synthetic (Lab)", "Treated", "Mono"], key="dia_type")
         with dc3:
              stock_qty = st.number_input("Stock Quantity", min_value=0, value=1, step=1, key="dia_stock")
+
+        # Phase 15: Factory Info Inputs
+        st.markdown("---")
+        st.subheader("Factory Information (Optional)")
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1: factory_name = st.text_input("🏭 Factory Name", key='reg_factory_name', placeholder="e.g. Gold Smith Co.")
+        with fc2: factory_contact = st.text_input("📞 Factory Contact", key='reg_factory_contact', placeholder="e.g. 010-9999-8888")
+        with fc3: production_time = st.text_input("⏱️ Production Time", key='reg_production_time', placeholder="e.g. 7-10 days")
 
         # Row 2: Cert & Shape
         dc4, dc5 = st.columns(2)
@@ -796,18 +1185,6 @@ def show_register_page():
         img_side = None
 
         st.markdown("---")
-        st.subheader("💰 Pricing")
-        pc1, pc2, pc3 = st.columns(3)
-        with pc1: d_cost = st.number_input("Purchase Cost (KRW)", min_value=0, step=10000, key="dia_cost")
-        with pc2: d_margin = st.number_input("Margin (%)", min_value=0.0, value=10.0, key="dia_margin")
-        with pc3: d_vat = st.number_input("VAT (%)", min_value=0.0, value=10.0, key="dia_vat")
-        
-        # Calc
-        selling_price_dia = d_cost * (1 + d_margin/100)
-        final_price_dia = selling_price_dia * (1 + d_vat/100)
-        final_price = final_price_dia
-        
-        st.metric("Final Price (Inc. VAT)", format_currency(final_price_dia))
         st.markdown("---")
         
     elif product_type == "ColorStone":
@@ -825,6 +1202,14 @@ def show_register_page():
         with csc4: stock_qty = st.number_input("Stock Qty", min_value=1, value=1, key="cs_stock")
         with csc5: name = st.text_input("Product Name / Description", placeholder="e.g. 2.0ct Pigeon Blood Ruby", key="cs_name")
         
+        # Phase 15: Factory Info Inputs
+        st.markdown("---")
+        st.subheader("Factory Information (Optional)")
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1: factory_name = st.text_input("🏭 Factory Name", key='reg_factory_name', placeholder="e.g. Gold Smith Co.")
+        with fc2: factory_contact = st.text_input("📞 Factory Contact", key='reg_factory_contact', placeholder="e.g. 010-9999-8888")
+        with fc3: production_time = st.text_input("⏱️ Production Time", key='reg_production_time', placeholder="e.g. 7-10 days")
+
         # Grid Layout Row 3 (Specs): Weight | Color | Tone | Saturation | Clarity
         st.markdown("### 🌈 Grading")
         gc1, gc2, gc3, gc4, gc5 = st.columns(5)
@@ -848,24 +1233,6 @@ def show_register_page():
         img_side = None
         
         st.markdown("---")
-        st.subheader("💰 Pricing")
-        
-        pc1, pc2, pc3, pc4 = st.columns(4)
-        with pc1: cs_cost = st.number_input("Cost (KRW)", min_value=0, step=10000, key="cs_cost")
-        with pc2: cs_margin = st.number_input("Margin (%)", min_value=0.0, value=20.0, key="cs_margin")
-        with pc3: cs_vat = st.number_input("VAT (%)", min_value=0.0, value=10.0, key="cs_vat")
-        with pc4: cs_tax = st.number_input("Tax/Fee (%)", min_value=0.0, value=0.0, key="cs_tax")
-
-        # Pricing Logic: Final = Cost + (Cost*Margin) + VAT_Amt + Tax_Amt
-        margin_amt = cs_cost * (cs_margin / 100)
-        vat_amt = (cs_cost + margin_amt) * (cs_vat / 100) # Standard VAT on Sale Price
-        tax_amt = (cs_cost + margin_amt) * (cs_tax / 100) # Fee on Sale Price
-        
-        final_price_cs = (cs_cost + margin_amt) + vat_amt + tax_amt
-        final_price = final_price_cs
-        
-        st.metric("Final Price (Inc. Tax+VAT)", format_currency(final_price_cs))
-        st.caption(f"Margin: {format_currency(margin_amt)} | VAT: {format_currency(vat_amt)} | Tax: {format_currency(tax_amt)}")
         st.markdown("---")
 
     elif product_type == "Watch":
@@ -879,6 +1246,14 @@ def show_register_page():
         with wc2: w_model = st.text_input("Model Number", placeholder="e.g. 116500LN", key="w_model")
         with wc3: w_year = st.text_input("Year", placeholder="e.g. 2023", key="w_year")
         with wc4: w_size = st.text_input("Size", placeholder="e.g. 40mm", key="w_size")
+
+        # Phase 15: Factory Info Inputs
+        st.markdown("---")
+        st.subheader("Factory Information (Optional)")
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1: factory_name = st.text_input("🏭 Factory Name", key='reg_factory_name', placeholder="e.g. Gold Smith Co.")
+        with fc2: factory_contact = st.text_input("📞 Factory Contact", key='reg_factory_contact', placeholder="e.g. 010-9999-8888")
+        with fc3: production_time = st.text_input("⏱️ Production Time", key='reg_production_time', placeholder="e.g. 7-10 days")
 
         # Row 2: Material | Color | Movement | Band
         wc5, wc6, wc7, wc8 = st.columns(4)
@@ -907,30 +1282,10 @@ def show_register_page():
         img_side = None
 
         st.markdown("---")
-        st.subheader("💰 Pricing")
+
         
-        # Pricing Logic (Margin-based Tax)
-        wp1, wp2, wp3, wp4 = st.columns(4)
-        with wp1: w_cost = st.number_input("Cost (KRW)", min_value=0, step=10000, key="w_cost")
-        with wp2: w_margin = st.number_input("Margin (%)", min_value=0.0, value=15.0, key="w_margin")
-        with wp3: w_vat = st.number_input("VAT (%)", min_value=0.0, value=10.0, key="w_vat")
-        with wp4: w_tax = st.number_input("Tax (%)", min_value=0.0, value=0.0, key="w_tax")
-        
-        # Formula:
-        # Margin Amt = Cost * Margin%
-        # VAT Amt = Margin Amt * VAT%
-        # Tax Amt = Margin Amt * Tax%
-        # Final = Cost + Margin Amt + VAT Amt + Tax Amt
-        
-        w_margin_amt = w_cost * (w_margin / 100)
-        w_vat_amt = w_margin_amt * (w_vat / 100)
-        w_tax_amt = w_margin_amt * (w_tax / 100)
-        
-        final_price_w = w_cost + w_margin_amt + w_vat_amt + w_tax_amt
-        final_price = final_price_w
-        
-        st.metric("Final Price", format_currency(final_price_w))
-        st.caption(f"Margin: {format_currency(w_margin_amt)} | VAT: {format_currency(w_vat_amt)} | Tax: {format_currency(w_tax_amt)}")
+
+
         st.markdown("---")
 
     elif product_type == "Etc":
@@ -942,6 +1297,19 @@ def show_register_page():
         with ec2: 
              # Sub Category is handled at top, just display stock
              stock_qty = st.number_input("Stock Qty", min_value=1, value=1, key="e_stock")
+        
+        # Phase 17: Etc Material/Size
+        ec3, ec4 = st.columns(2)
+        with ec3: e_material = st.text_input("Material", key="e_material", placeholder="e.g. Leather, Wood")
+        with ec4: e_size = st.text_input("Size", key="e_size", placeholder="e.g. 20mm, Large")
+
+        # Phase 15: Factory Info Inputs
+        st.markdown("---")
+        st.subheader("Factory Information (Optional)")
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1: factory_name = st.text_input("🏭 Factory Name", key='reg_factory_name', placeholder="e.g. Gold Smith Co.")
+        with fc2: factory_contact = st.text_input("📞 Factory Contact", key='reg_factory_contact', placeholder="e.g. 010-9999-8888")
+        with fc3: production_time = st.text_input("⏱️ Production Time", key='reg_production_time', placeholder="e.g. 7-10 days")
 
         # Row 2: Images
         st.markdown("### Images")
@@ -952,29 +1320,59 @@ def show_register_page():
         with img_col4: img_side = st.file_uploader("Side View", type=['png', 'jpg', 'jpeg'], key="e_img_side")
         
         st.markdown("---")
-        st.subheader("💰 Pricing")
+        st.markdown("---")
         
-        # Pricing Logic (Same as Watch: Margin-based Tax)
-        ep1, ep2, ep3, ep4 = st.columns(4)
-        with ep1: e_cost = st.number_input("Cost (KRW)", min_value=0, step=1000, key="e_cost")
-        with ep2: e_margin = st.number_input("Margin (%)", min_value=0.0, value=30.0, key="e_margin")
-        with ep3: e_vat = st.number_input("VAT (%)", min_value=0.0, value=10.0, key="e_vat")
-        with ep4: e_tax = st.number_input("Tax (%)", min_value=0.0, value=0.0, key="e_tax")
 
-        # Formula: Final = Cost + Margin + VAT(Margin) + Tax(Margin)
-        e_margin_amt = e_cost * (e_margin / 100)
-        e_vat_amt = e_margin_amt * (e_vat / 100)
-        e_tax_amt = e_margin_amt * (e_tax / 100)
-        
-        final_price_e = e_cost + e_margin_amt + e_vat_amt + e_tax_amt
-        final_price = final_price_e
-        
-        st.metric("Final Price", format_currency(final_price_e))
-        st.caption(f"Margin: {format_currency(e_margin_amt)} | VAT: {format_currency(e_vat_amt)} | Tax: {format_currency(e_tax_amt)}")
-        
+
         # Row 4: Remarks
         e_comments = st.text_area("Remarks", height=100, key="e_comments")
         st.markdown("---")
+
+    # --- Global Materials Section (Unified) ---
+    gold_cost, stone_cost = render_gold_stone_inputs()
+    # Refresh vars
+    gold_weight = st.session_state.get('reg_gold_weight', 0.0)
+    gold_price_applied = st.session_state.get('reg_gold_price_applied', 0)
+    st.markdown("---")
+    
+    # --- Phase 20: Unified Pricing Section (For All Categories) ---
+    st.markdown("### 💰 Pricing Factors")
+    
+    # Inputs
+    p_col1, p_col2, p_col3 = st.columns(3)
+    with p_col1: labor_cost = st.number_input("Labor Cost / Base Cost (공임/원가)", min_value=0, step=5000, key="reg_labor")
+    with p_col2: margin_pct = st.number_input("Margin (%)", min_value=0.0, value=10.0, key="reg_margin")
+    with p_col3: discount_pct = st.number_input("Discount (%)", min_value=0.0, value=0.0, key="reg_discount")
+        
+    p_col4, p_col5, p_col6 = st.columns(3)
+    with p_col4: vat_pct = st.number_input("VAT (%)", min_value=0.0, value=10.0, key="reg_vat")
+    with p_col5: fee_pct = st.number_input("Card Fee (%)", min_value=0.0, value=3.0, key="reg_fee")
+    with p_col6: tax_pct = st.number_input("Special Tax (%)", min_value=0.0, value=0.0, key="reg_tax_special") # Added for Watch/Etc compat
+
+    # Calculations (Unified Logic)
+    # 1. Total Base Cost (Materials + Labor/Base)
+    product_cost = gold_cost + stone_cost + labor_cost
+    
+    # 2. Selling Price (Base + Margin)
+    selling_price = product_cost * (1 + margin_pct/100)
+    expected_profit = selling_price - product_cost
+    
+    # 3. Final Price (Selling + VAT + Fees + Taxes)
+    vat_amount = selling_price * (vat_pct / 100)
+    fee_amount = selling_price * (fee_pct / 100)
+    tax_amount = selling_price * (tax_pct / 100)
+    
+    final_price = selling_price + vat_amount + fee_amount + tax_amount
+    
+    # Preview
+    st.markdown("#### Preview")
+    calc_col1, calc_col2, calc_col3, calc_col4 = st.columns(4)
+    calc_col1.metric("Total Cost", format_currency(product_cost), help="Gold + Stones + Labor/Base")
+    calc_col2.metric("Margin Profit", format_currency(expected_profit), delta_color="normal")
+    calc_col3.metric("Selling Price", format_currency(selling_price))
+    calc_col4.metric("Final Price", format_currency(final_price), delta_color="normal")
+    
+    st.markdown("---")
 
     submit_btn = st.button(submit_label, key="save_update_product_btn", type="primary")
     
@@ -988,7 +1386,22 @@ def show_register_page():
                 if edit_mode_id:
                     target_product = session.query(Product).filter(Product.id == edit_mode_id).first()
                 else:
-                    target_product = Product(user_id=1, category=product_type) # Use dynamic type
+                    # Generic Product Creation
+                    target_product = Product(user_id=st.session_state.user_id, category=product_type)
+                    
+                    # Generate Product Code: {shop_code}-{Category}-{YYMMDD}-{Seq}
+                    shop_code = st.session_state.shop_code
+                    cat_map = {"Jewelry": "J", "Gold": "G", "Watch": "W", "Dia/Stone": "D", "ColorStone": "C", "Etc": "E"}
+                    cat_char = cat_map.get(product_type, "X")
+                    date_str = datetime.now().strftime("%y%m%d")
+                    prefix = f"{shop_code}-{cat_char}{date_str}-"
+                    
+                    # Count existing products for this shop/category today
+                    # We look for product_code LIKE prefix%
+                    count = session.query(Product).filter(Product.product_code.like(f"{prefix}%")).count()
+                    seq = count + 1
+                    target_product.product_code = f"{prefix}{seq:03d}"
+                    
                     session.add(target_product)
                 
                 # Common Fields
@@ -998,6 +1411,18 @@ def show_register_page():
                 target_product.total_price = final_price
                 target_product.stock_quantity = stock_qty 
 
+                # Phase 15: Factory Info
+                target_product.factory_name = factory_name
+                target_product.factory_contact = factory_contact
+                target_product.factory_contact = factory_contact
+                target_product.production_time = production_time
+                
+                # Phase 18: Save Pricing to Product
+                target_product.labor_cost = labor_cost
+                target_product.margin_percentage = margin_pct
+                target_product.tax_percentage = vat_pct
+                target_product.card_fee_percentage = fee_pct
+
                 # Image Saving
                 if img_rep: target_product.image_rep = save_uploaded_file(img_rep, "rep")
                 if img_top: target_product.image_top = save_uploaded_file(img_top, "top")
@@ -1005,43 +1430,113 @@ def show_register_page():
                 if img_side: target_product.image_side = save_uploaded_file(img_side, "side")
                 
                 # Type Specific Logic
-                if product_type in ["Jewelry", "Gold", "Etc"] and product_type != "Etc": # Fix: logic was merging Etc
-                     # ... (Existing Jewelry Logic) ...
-                     # Wait, the previous logic merged "Etc" into Jewelry. We need to separate it now since Etc has its own table.
-                     pass
                 
-                # RE-CHECK: The user prompt says "If main_category == 'Etc'".
-                # Previously "Etc" was in ["Jewelry", "Gold", "Etc"].
-                # Now we must REMOVE "Etc" from that list or handle it specifically.
+                # Retrieve Gold/Stone data from session just in case it was updated in helper
+                gold_weight = st.session_state.get('reg_gold_weight', 0.0)
+                gold_purity = st.session_state.get('reg_gold_purity', '18K')
+                gold_price_applied = st.session_state.get('reg_gold_price_applied', 0)
+                
+                # Check for stones
+                has_stones_check = False
+                for s in st.session_state.main_stones: 
+                    if s['name']: has_stones_check = True
+                for s in st.session_state.sub_stones: 
+                    if s['name']: has_stones_check = True
+
+                # Phase 19: Universal Gold/Jewelry Saving
+                # If category is Jewelry/Gold OR if we have material info (Gold > 0 or Stones exist)
+                is_jewelry_cat = product_type in ["Jewelry", "Gold"]
+                has_material_data = (gold_weight > 0) or has_stones_check
+                
+                if is_jewelry_cat or has_material_data:
+                    # Create/Update ProductJewelry
+                     if edit_mode_id and target_product.jewelry_details:
+                        jd = target_product.jewelry_details
+                     else:
+                        jd = ProductJewelry(product=target_product)
+                        # Only add if not editing (edit mode attached via backref usually, but safe to check)
+                        if not edit_mode_id or not target_product.jewelry_details: 
+                             session.add(jd)
+                        
+                     jd.gold_weight = gold_weight
+                     jd.gold_purity = gold_purity
+                     jd.gold_price_applied = gold_price_applied
+                     # Pricing factors primarily on Product now (Phase 18), but keep legacy sync or 0
+                     jd.labor_cost = labor_cost
+                     jd.margin_pct = margin_pct
+                     jd.discount_pct = discount_pct
+                     jd.vat_pct = vat_pct
+                     jd.fee_pct = fee_pct
+                     
+                     # Recalc Cost/Price if it's an "Etc/Watch" item with added materials?
+                     # If it's Watch, the price logic was specific.
+                     # But if user adds Gold, the total cost increases.
+                     # Let's update product_cost on JD to reflect Materials + Labor
+                     # Note: labor_cost is now on Product (Phase 18) but we have 'reg_labor' here too.
+                     
+                     jd.product_cost = product_cost # This variable 'product_cost' comes from Jewelry calc block...
+                     # Wait, 'product_cost' variable was calculated in the Jewelry block (Line 1201).
+                     # If we are in Watch/Etc block, 'product_cost' variable is NOT defined or is stale!
+                     
+                     # Fix: Recalculate cost here universal
+                     g_c = gold_weight * gold_price_applied
+                     s_c = 0
+                     for s in st.session_state.main_stones: s_c += (s['qty'] * s['price'])
+                     for s in st.session_state.sub_stones: s_c += (s['qty'] * s['price'])
+                     
+                     jd.product_cost = g_c + s_c + labor_cost
+                     jd.calc_selling_price = selling_price
+                     jd.final_price = final_price
+
+                # 1. Main Table Updates (Legacy Block wrapper removed, logic merged above)
+                # But we still need to handle specific logic if it was strictly Jewelry?
+                # The above block handles JD creation.
                 
                 if product_type in ["Jewelry", "Gold"]:
-                    if edit_mode_id and target_product.jewelry_details:
-                        jd = target_product.jewelry_details
-                    else:
-                        jd = ProductJewelry(product=target_product)
-                        if not edit_mode_id: session.add(jd)
-                        
-                    jd.gold_weight = gold_weight
-                    jd.gold_purity = gold_purity
-                    jd.gold_price_applied = gold_price_applied
-                    jd.labor_cost = labor_cost
-                    jd.margin_pct = margin_pct
-                    jd.discount_pct = discount_pct
-                    jd.vat_pct = vat_pct
-                    jd.fee_pct = fee_pct
-                    jd.product_cost = product_cost
-                    jd.calc_selling_price = selling_price
-                    jd.final_price = final_price
+                     # Any Jewelry specific strictly things?
+                     # Already covered above.
+                     pass 
+
                     
-                    # Stones
-                    if edit_mode_id:
-                         session.query(ProductStone).filter(ProductStone.product_id == target_product.id).delete()
-                    for ms in st.session_state.main_stones:
-                        if ms['name']: session.add(ProductStone(product=target_product, stone_type="Main", name=ms['name'], quantity=ms['qty'], unit_price=ms['price']))
-                    for ss in st.session_state.sub_stones:
-                        if ss['name']: session.add(ProductStone(product=target_product, stone_type="Sub", name=ss['name'], quantity=ss['qty'], unit_price=ss['price']))
+                # Universal Material Saving (Gold & Stones for ALL tables if input exists)
+                # Check if we have active gold/stone inputs even if not "Jewelry" category
+                # NOTE: For Watch/Etc, the UI might not show these inputs, so values might be default 0/empty.
+                # However, if user ADDS inputs to those sections later, we want this to work. 
+                # Currently, UI only shows materials for Jewelry/Gold. 
+                # But the user REQUESTED this fix "Regardless of category".
                 
-                elif product_type == "Dia/Stone":
+                # Check if we should save/update JewelryDetails for "Material Info"
+                # Only if gold_weight > 0 implies there's material info to save?
+                # The user said: "if gold_weight > 0 or stones are added, save them".
+                
+                has_gold = False
+                has_stones = False
+                for ms in st.session_state.main_stones: 
+                    if ms['name']: has_stones = True
+                for ss in st.session_state.sub_stones: 
+                    if ss['name']: has_stones = True
+                
+                if 'reg_gold_weight' in st.session_state and st.session_state.reg_gold_weight > 0: has_gold = True
+                if 'gold_weight' in locals() and gold_weight > 0: has_gold = True # use local var
+                
+                # If we are NOT in Jewelry/Gold category, but have material data, we might need a JewelryDetail record or similar?
+                # Actually, if the category is Watch, we don't usually create JewelryDetail. 
+                # BUT the user wants "Universal Material Saving". 
+                # Let's assume if it's NOT Jewelry/Gold, we attach stones to ProductStone, and maybe ignore gold unless needed.
+                # BUT the prompt says "Save GoldDetail...". 
+                # If I attach ProductJewelry to a Watch, it works (One-to-One).
+                
+                # Universal Stone Saving (Moved OUT of if/elif)
+                if edit_mode_id:
+                     session.query(ProductStone).filter(ProductStone.product_id == target_product.id).delete()
+                
+                for ms in st.session_state.main_stones:
+                    if ms['name']: session.add(ProductStone(product=target_product, stone_type="Main", name=ms['name'], quantity=ms['qty'], unit_price=ms['price']))
+                for ss in st.session_state.sub_stones:
+                    if ss['name']: session.add(ProductStone(product=target_product, stone_type="Sub", name=ss['name'], quantity=ss['qty'], unit_price=ss['price']))
+
+                # Continue Type Specific...
+                if product_type == "Dia/Stone":
                     if edit_mode_id and target_product.diamond_details:
                         dd = target_product.diamond_details
                     else:
@@ -1124,14 +1619,35 @@ def show_register_page():
                     target_product.etc_details.vat_pct = e_vat
                     target_product.etc_details.tax_pct = e_tax
                     target_product.etc_details.final_price = final_price_e
+                    # Phase 17: Save Material/Size
+                    target_product.etc_details.material = e_material
+                    target_product.etc_details.size = e_size
                 
+                # [긴급 추가] 카테고리 불문하고 금 중량 강제 저장 (ETC/시계 데이터 증발 방지)
+                # 1. 입력된 금 중량을 확인합니다.
+                current_gold_weight = st.session_state.get('reg_gold_weight', 0.0)
+                
+                # 2. 금 중량이 0보다 크면 무조건 저장을 시도합니다.
+                if current_gold_weight > 0:
+                    # 만약 저장할 '주얼리 정보(ProductJewelry)' 방이 없으면 새로 만듭니다.
+                    if target_product.jewelry_details is None:
+                        target_product.jewelry_details = ProductJewelry(product_id=target_product.id)
+                        session.add(target_product.jewelry_details)
+                    
+                    # 3. 데이터를 강제로 집어넣습니다.
+                    target_product.jewelry_details.gold_weight = current_gold_weight
+                    target_product.jewelry_details.gold_purity = st.session_state.get('reg_gold_purity', '18K')
+                    target_product.jewelry_details.gold_price_applied = st.session_state.get('reg_gold_price_applied', 0)
+                    
                 session.commit()
                 st.toast(f"Product '{name}' saved!", icon="🎉")
                 
                 if edit_mode_id:
                     del st.session_state['edit_mode_id']
                     del st.session_state['data_loaded']
-                    keys_to_clear = ['reg_name', 'reg_stock', 'reg_category', 'reg_subcategory', 'reg_gold_weight', 'reg_gold_price_applied', 'reg_labor', 'reg_margin', 'reg_discount', 'reg_vat', 'reg_fee', 'reg_img_rep', 'reg_img_top', 'reg_img_front', 'reg_img_side', 'dia_name', 'dia_type', 'dia_cert', 'dia_shape', 'dia_weight', 'dia_color', 'dia_clarity', 'dia_cut', 'dia_polish', 'dia_symmetry', 'dia_fluo', 'dia_cost', 'dia_margin', 'dia_vat', 'cs_name', 'cs_type', 'cs_cert', 'cs_shape', 'cs_weight', 'cs_color', 'cs_tone', 'cs_sat', 'cs_clarity', 'cs_origin', 'cs_comment', 'cs_cost', 'cs_margin', 'cs_vat', 'cs_tax', 'w_model', 'w_year', 'w_size', 'w_material', 'w_color', 'w_movement', 'w_band', 'w_cert', 'w_case', 'w_status', 'w_name', 'w_stock', 'w_cost', 'w_margin', 'w_vat', 'w_tax', 'e_name', 'e_stock', 'e_cost', 'e_margin', 'e_vat', 'e_tax', 'e_comments']
+                    keys_to_clear = ['reg_name', 'reg_stock', 'reg_category', 'reg_subcategory', 
+                                     'reg_factory_name', 'reg_factory_contact', 'reg_production_time', # Phase 15
+                                     'reg_gold_weight', 'reg_gold_price_applied', 'reg_labor', 'reg_margin', 'reg_discount', 'reg_vat', 'reg_fee', 'reg_img_rep', 'reg_img_top', 'reg_img_front', 'reg_img_side', 'dia_name', 'dia_type', 'dia_cert', 'dia_shape', 'dia_weight', 'dia_color', 'dia_clarity', 'dia_cut', 'dia_polish', 'dia_symmetry', 'dia_fluo', 'dia_cost', 'dia_margin', 'dia_vat', 'cs_name', 'cs_type', 'cs_cert', 'cs_shape', 'cs_weight', 'cs_color', 'cs_tone', 'cs_sat', 'cs_clarity', 'cs_origin', 'cs_comment', 'cs_cost', 'cs_margin', 'cs_vat', 'cs_tax', 'w_model', 'w_year', 'w_size', 'w_material', 'w_color', 'w_movement', 'w_band', 'w_cert', 'w_case', 'w_status', 'w_name', 'w_stock', 'w_cost', 'w_margin', 'w_vat', 'w_tax', 'e_name', 'e_stock', 'e_cost', 'e_margin', 'e_vat', 'e_tax', 'e_comments', 'e_material', 'e_size']
                     for k in keys_to_clear:
                         if k in st.session_state: del st.session_state[k]
                     st.button("Return to Gallery", on_click=lambda: st.session_state.update({'nav_selection': 'Gallery'}))
@@ -1186,10 +1702,56 @@ def show_settings_page():
                     session.delete(sub)
                     session.commit()
                     st.rerun()
+    with col2:
+        st.caption(f"Current Sub-Categories for {main_cat_sel}")
+        current_subs = session.query(CategorySetting).filter_by(main_category=main_cat_sel).all()
+        if current_subs:
+            for sub in current_subs:
+                c1, c2 = st.columns([4, 1])
+                c1.write(f"• {sub.sub_category_name}")
+                if c2.button("🗑️", key=f"del_cat_{sub.id}_unique"):
+                    session.delete(sub)
+                    session.commit()
+                    st.rerun()
         else:
             st.info("No sub-categories defined.")
 
     session.close()
+
+    st.markdown("---")
+    
+    # Image Normalization (SuperUser)
+    if st.session_state.get('user_role') == 'SuperUser':
+        st.markdown("### 🖼️ Image Maintenance")
+        if st.button("Example: Process All Images to Square", key="btn_normalize_imgs"):
+            processed_count = normalize_existing_images()
+            st.success(f"Processed {processed_count} images to 500x500 square format!")
+            
+    st.markdown("### 🔐 Security Settings")
+    
+    with st.form("change_password_form"):
+        current_pw = st.text_input("Current Password", type="password")
+        new_pw = st.text_input("New Password", type="password")
+        confirm_pw = st.text_input("Confirm New Password", type="password")
+        
+        if st.form_submit_button("Update Password", type="primary"):
+            if new_pw != confirm_pw:
+                st.error("New passwords do not match.")
+            elif not new_pw:
+                st.error("Password cannot be empty.")
+            else:
+                session = get_db_session()
+                # Use current user session ID
+                user = session.query(User).filter_by(id=st.session_state.user_id).first()
+                if user:
+                    # Check current hash
+                    if user.password_hash == hash_password(current_pw):
+                        user.password_hash = hash_password(new_pw)
+                        session.commit()
+                        st.success("User password updated! Please re-login.")
+                    else:
+                        st.error("Incorrect current password.")
+                session.close()
 
 def show_sales_page():
     st.header("🛍️ POS / Sales")
@@ -1199,6 +1761,10 @@ def show_sales_page():
     search_term = st.text_input("Search Product", placeholder="Name or Category...")
     
     query = session.query(Product).filter(Product.stock_quantity > 0)
+    
+    # Isolation Logic
+    if st.session_state.user_role != 'SuperUser':
+        query = query.filter(Product.user_id == st.session_state.user_id)
     if search_term:
         query = query.filter(Product.name.ilike(f"%{search_term}%"))
     
@@ -1279,8 +1845,29 @@ def show_gallery_page():
     # 1. Sidebar Settings (Updated for 'Don' and removed Category Selectbox)
     st.sidebar.markdown("### ⚙️ Global Settings")
     
+    # Auto-fetch Gold Price
+    fetched_price = fetch_gold_price()
+    
+    # 2026-02-05 Upgrade: Force update the session state to reflect the live price
+    # The user specifically requested to overwrite the manual input if a live price is available.
+    if fetched_price:
+        st.session_state['gold_price_don'] = fetched_price
+
     # Gold Price Input (Don System)
-    gold_price_don = st.sidebar.number_input("Today's Gold Price (per 1 Don / 3.75g)", min_value=0, value=450000, step=1000, format="%d")
+    # We use session_state for persistence
+    gold_price_don = st.sidebar.number_input(
+        "Today's Gold Price (per 1 Don / 3.75g)", 
+        min_value=0, 
+        value=st.session_state.get('gold_price_don', 450000),
+        step=1000, 
+        format="%d",
+        key="gold_price_don"
+    )
+    
+    if fetched_price:
+        st.sidebar.caption(f"✅ Live Price Applied: {format_currency(fetched_price)}")
+    else:
+        st.sidebar.error("⚠️ Failed to fetch live price")
     
     # Calculate Per Gram (Floor to nearest 100)
     gold_price_per_g = math.floor((gold_price_don / 3.75) / 100) * 100
@@ -1290,35 +1877,90 @@ def show_gallery_page():
     
     # 2. Fetch All Products
     session = get_db_session()
-    all_products = session.query(Product).order_by(Product.created_at.desc()).all()
+    
+    query = session.query(Product)
+    
+    # Isolation Logic
+    if st.session_state.user_role != 'SuperUser':
+        query = query.filter(Product.user_id == st.session_state.user_id)
+        
+    all_products = query.order_by(Product.created_at.desc()).all()
     
     if not all_products:
         st.info("No products found.")
         session.close()
         return
 
-    # 3. Category Tabs
-    categories = ["ALL", "Jewelry", "Gold", "Watch", "Dia/Stone", "ColorStone", "Etc"]
-    tabs = st.tabs(categories)
+    # --- Phase 14: Advanced Gallery Features ---
+    
+    # 3. Search & Filter
+    search_term = st.text_input("🔍 Search Product", placeholder="Name, Brand, Code, or Serial No...")
+    
+    filtered_products = all_products
+    if search_term:
+        term = search_term.lower()
+        filtered_products = [
+            p for p in all_products 
+            if term in p.name.lower() 
+            or (p.product_code and term in p.product_code.lower())
+            or (p.category and term in p.category.lower())
+            or (p.sub_category and term in p.sub_category.lower())
+        ]
+        
+    # 4. Total Asset Dashboard
+    total_asset_value = 0
+    cat_counts = {
+        "ALL": len(filtered_products),
+        "Jewelry": 0, "Gold": 0, "Watch": 0, "Dia/Stone": 0, "ColorStone": 0, "Etc": 0
+    }
+    
+    for p in filtered_products:
+        # Calculate Value (Simplified Fix)
+        # Use simple attribute total_price which should be populated on save
+        price = p.total_price if p.total_price else 0
+        total_asset_value += price
+        
+        # Count
+        if p.category in cat_counts:
+            cat_counts[p.category] += 1
+            
+    # Display Dashboard
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    st.markdown(f"""
+    <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
+        <h4 style="margin:0; color: #31333F;">📅 As of {today_str} | Total Inventory Value</h4>
+        <h2 style="margin:0; color: #0068C9;">{format_currency(total_asset_value)}</h2>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 5. Dynamic Tabs
+    tab_names = ["ALL", "Jewelry", "Gold", "Watch", "Diamond", "ColorStone", "Etc"]
+    
+    # Generate Labels
+    tab_labels = [f"{t} ({cat_counts.get(t if t!='Diamond' else 'Dia/Stone', 0)})" for t in tab_names]
+    
+    tabs = st.tabs(tab_labels)
     
     for i, tab in enumerate(tabs):
         with tab:
-            selected_cat = categories[i]
+            current_cat = tab_names[i]
             
             # Filter Products
-            if selected_cat == "ALL":
-                products_to_show = all_products
+            if current_cat == "ALL":
+                products_to_show = filtered_products
             else:
-                products_to_show = [p for p in all_products if p.category == selected_cat]
-            
+                # Handle Display Name vs DB Name
+                db_cat = "Dia/Stone" if current_cat == "Diamond" else current_cat
+                products_to_show = [p for p in filtered_products if p.category == db_cat]
+                
             if not products_to_show:
-                st.info(f"No products in {selected_cat}.")
+                st.info(f"No products in {current_cat}.")
                 continue
                 
             # Render Grid
-            cols = st.columns(3)
+            cols = st.columns(5)
             for idx, product in enumerate(products_to_show):
-                with cols[idx % 3]:
+                with cols[idx % 5]:
                     with st.container(border=True):
                         # Stock Badge
                         if product.stock_quantity > 0:
@@ -1328,12 +1970,19 @@ def show_gallery_page():
                         
                         # Image
                         if product.image_rep and os.path.exists(product.image_rep):
-                            st.image(product.image_rep)
+                            st.image(product.image_rep, use_container_width=True)
                         else:
                             st.empty() 
                         
-                        st.subheader(product.name)
-                        st.caption(f"{product.category} / {product.sub_category if product.sub_category else '-'}")
+                        # Compact Title
+                        display_name = (product.name[:18] + '..') if len(product.name) > 20 else product.name
+                        st.markdown(f"**{display_name}**", help=product.name)
+                        
+                        # Display Product Code
+                        if product.product_code:
+                            st.caption(f"ID: {product.product_code}")
+                            
+                        # st.caption(f"{product.category} / {product.sub_category if product.sub_category else '-'}")
                         
                         # Price Calculation using dynamic gold_price_per_g
                         final_price_display = 0
@@ -1365,11 +2014,11 @@ def show_gallery_page():
                         # Actions
                         ac1, ac2, ac3 = st.columns(3)
                         with ac1:
-                            if st.button("👁️", key=f"view_{selected_cat}_{product.id}"): view_product_details(product.id, gold_price_per_g)
+                            if st.button("👁️", key=f"view_{current_cat}_{product.id}"): view_product_details(product.id, gold_price_per_g)
                         with ac2:
-                            st.button("✏️", key=f"edit_{selected_cat}_{product.id}", on_click=go_to_edit, args=(product.id,))
+                            st.button("✏️", key=f"edit_{current_cat}_{product.id}", on_click=go_to_edit, args=(product.id,))
                         with ac3:
-                            if st.button("🗑️", key=f"del_{selected_cat}_{product.id}"):
+                            if st.button("🗑️", key=f"del_{current_cat}_{product.id}"):
                                 try:
                                      session.delete(product)
                                      session.commit()
@@ -1384,52 +2033,88 @@ def view_product_details(product_id, current_gold_price):
     session = get_db_session()
     product = session.query(Product).filter(Product.id == product_id).first()
     
+    # 닫기 버튼 스타일
     st.markdown("""<style>div[data-testid="stDialog"] div[data-testid="column"]:nth-of-type(2) button {color: red !important; border-color: red !important;}</style>""", unsafe_allow_html=True)
     
     if product:
+        # [헤더]
         st.header(product.name)
-        col_edit, col_del = st.columns(2)
-        with col_edit:
-            st.button("✏️ Edit Product", use_container_width=True, key=f"pop_edit_{product.id}", on_click=go_to_edit, args=(product.id,))
-        with col_del:
-            if st.button("🗑️ Delete Product", use_container_width=True, key=f"pop_del_{product.id}"):
-                 try:
-                     session.delete(product)
-                     session.commit()
-                     st.toast("Product deleted!")
-                     time.sleep(1)
-                     st.rerun()
-                 except Exception as e: st.error(f"Error: {e}")
-        
+        st.caption(f"Category: {product.category} > {product.sub_category} | Stock: {product.stock_quantity}")
         st.markdown("---")
+
+        # [이미지]
         if product.image_rep: st.image(product.image_rep, caption="Representative")
-            
         imgs = [x for x in [product.image_top, product.image_front, product.image_side] if x and os.path.exists(x)]
         if imgs:
             st.markdown("##### Additional Views")
             ic1, ic2, ic3 = st.columns(3)
             for i, img_path in enumerate(imgs):
                 with [ic1, ic2, ic3][i]: st.image(img_path)
-
-        st.markdown("---")
-        st.write(f"**Category:** {product.category} > {product.sub_category}")
-        st.write(f"**Stock:** {product.stock_quantity}")
         
-        if product.jewelry_details:
-             jd = product.jewelry_details
-             gold_cost = jd.gold_weight * current_gold_price
-             stone_cost = sum(s.quantity * s.unit_price for s in product.stones) if product.stones else 0
-             prod_cost = gold_cost + stone_cost + jd.labor_cost
-             selling = prod_cost * (1 + jd.margin_pct / 100)
-             final = selling * (1 + (jd.vat_pct + jd.fee_pct)/100)
+        st.markdown("---")
 
-             st.markdown(f"### 🏷️ Current Price: {format_currency(final)}")
-             st.markdown("#### Materials")
-             st.write(f"**Gold**: {jd.gold_purity} | {jd.gold_weight}g")
-             if product.stones:
-                 st.markdown("**Stones:**")
-                 for stone in product.stones:
-                     st.write(f"- {stone.stone_type}: {stone.name} ({stone.quantity} x {format_currency(stone.unit_price)})")
+        # 1. [스펙 표시] 카테고리별 고유 정보 (가격 계산 로직 제거됨)
+        if product.watch_details:
+             wd = product.watch_details
+             st.markdown("### ⌚ Watch Specs")
+             wc1, wc2 = st.columns(2)
+             wc1.markdown(f"**Model:** {wd.model_number}")
+             wc2.markdown(f"**Brand:** {product.sub_category}")
+             st.markdown(f"**Material:** {wd.material} | **Dial:** {wd.color}")
+             st.caption(f"Status: {wd.status} | Year: {wd.year}")
+
+        elif product.diamond_details:
+             dd = product.diamond_details
+             st.markdown("### 💎 Diamond Specs")
+             st.markdown(f"**{dd.weight}ct / {dd.color} / {dd.clarity} / {dd.cut}**")
+             st.markdown(f"**Cert:** {dd.certificate} ({dd.stone_type})")
+
+        elif product.color_stone_details:
+             cs = product.color_stone_details
+             st.markdown("### 🌈 Stone Specs")
+             st.markdown(f"**{cs.stone_type}** ({cs.weight}ct) - {cs.color}")
+             st.caption(f"Origin: {cs.origin}")
+
+        elif product.etc_details:
+             ed = product.etc_details
+             st.markdown("### 📦 Item Specs")
+             st.markdown(f"**Material:** {ed.material or '-'} | **Size:** {ed.size or '-'}")
+             st.markdown(f"**Description:** {ed.comments}")
+
+        # 2. [통합 재료 정보] 주얼리 장부(ProductJewelry) 직접 조회
+        saved_gold_view = session.query(ProductJewelry).filter(ProductJewelry.product_id == product.id).first()
+        
+        has_materials = saved_gold_view or product.stones
+        
+        if has_materials:
+            st.divider()
+            st.markdown("### 🏗️ Materials")
+            if saved_gold_view:
+                 st.markdown(f"**🥇 Gold:** {saved_gold_view.gold_purity} | **{saved_gold_view.gold_weight}g**")
+            
+            if product.stones:
+                 st.markdown("**💎 Stones:**")
+                 for s in product.stones:
+                     st.write(f"- {s.stone_type}: {s.name} ({s.quantity} pcs)")
+
+        # 3. [최종 가격] DB에 저장된 진짜 가격(total_price)을 그대로 표시
+        st.divider()
+        st.markdown(f"### 💰 Final Price: {format_currency(product.total_price)}")
+        
+        # (관리자용) 원가 공개
+        if product.labor_cost > 0 or product.margin_percentage > 0:
+            with st.expander("🔒 Cost Breakdown (Admin Only)"):
+                st.write(f"Labor/Base Cost: {format_currency(product.labor_cost)}")
+                st.write(f"Margin: {product.margin_percentage}%")
+
+        # [공장 정보]
+        if product.factory_name:
+            st.divider()
+            st.caption(f"🏭 Factory: {product.factory_name}")
+
+    else:
+        st.error("Product not found.")
+        
     session.close()
 
 def show_order_history_page():
@@ -1524,22 +2209,129 @@ def view_order_details(order_id):
 
     session.close()
 
+def show_admin_page():
+    st.header("👥 Admin / Member Management")
+    # Security Check
+    if st.session_state.get('user_role') != 'SuperUser':
+        st.error("⛔ Access Denied: SuperUser only.")
+        return
+    session = get_db_session()
+    # 1. Create New Biz User
+    with st.expander("➕ Register New Biz Member", expanded=True):
+        with st.form("add_user_form"):
+            col1, col2 = st.columns(2)
+            new_username = col1.text_input("Username (ID)")
+            new_password = col2.text_input("Password", type="password")
+            
+            col3, col4 = st.columns(2)
+            shop_name = col3.text_input("Shop Name (e.g. Diamond Bank)")
+            shop_code = col4.text_input("Shop Code (e.g. DB)").upper()
+            
+            submit_user = st.form_submit_button("Create Member")
+            
+            if submit_user:
+                if new_username and new_password and shop_code:
+                    # Check if user exists
+                    existing = session.query(User).filter(User.username == new_username).first()
+                    if existing:
+                        st.error("Username already exists.")
+                    else:
+                        # Create User
+                        # Note: In production, use hashing. For now, simple storage as requested or use same hash logic.
+                        import hashlib
+                        pw_hash = hashlib.sha256(new_password.encode()).hexdigest()
+                        
+                        new_user = User(
+                            username=new_username, 
+                            password_hash=pw_hash,
+                            shop_name=shop_name,
+                            shop_code=shop_code,
+                            role='Biz'
+                        )
+                        session.add(new_user)
+                        session.commit()
+                        st.success(f"✅ Member '{new_username}' ({shop_name}) created!")
+                        time.sleep(1)
+                        st.rerun()
+                else:
+                    st.warning("Please fill in all fields.")
+    # 2. List Existing Users
+    st.subheader("📋 Member List")
+    users = session.query(User).all()
+    
+    # Header
+    c1, c2, c3, c4 = st.columns([1, 2, 2, 1]) 
+    c1.markdown("ID") 
+    c2.markdown("Shop Name") 
+    c3.markdown("Shop Code") 
+    c4.markdown("Role") 
+    st.divider()
+
+    for u in users: 
+        c1, c2, c3, c4 = st.columns([1, 2, 2, 1]) 
+        c1.write(u.username) 
+        c2.write(u.shop_name) 
+        c3.write(u.shop_code) 
+        c4.write(u.role)
+
+    session.close()
+
+
 # --- Main Logic ---
+
+# Initialize Data
+run_migrations()
+init_db_data()
 
 st.sidebar.title("💎 Jewelry ERP")
 
-if 'edit_mode_id' in st.session_state and st.session_state['edit_mode_id']:
-    st.session_state['nav_selection'] = "Register Product"
-elif 'nav_selection' not in st.session_state:
-    st.session_state['nav_selection'] = "Gallery"
+if 'logged_in' not in st.session_state:
+    show_login_page()
+else:
+    # Sidebar Info
+    st.sidebar.markdown(f"User: **{st.session_state.user_name}** ({st.session_state.shop_code})")
+    if st.sidebar.button("Logout"):
+        logout_user()
 
-page = st.sidebar.radio("Navigate", ["Gallery", "Register Product", "Sales / POS", "Order History", "Settings"], key="nav_selection")
+    # --- Phase 13-2: Auto-Run Image Maximization (One-time check) ---
+    if st.session_state.user_role == 'SuperUser':
+        if 'img_optimized_v2' not in st.session_state:
+            # We treat this as a "Notify" or auto-run
+            # To prevent blocking, we can just show a toast or run it
+            # The prompt says: "Automatically re-run... so the user sees the change immediately upon refresh."
+            # Running it here might be slow, but it's requested.
+            count = normalize_existing_images()
+            st.session_state['img_optimized_v2'] = True
+            if count > 0:
+                st.toast(f"✅ Optimized {count} images to Maximize Size!", icon="🖼️")
 
-if page == "Gallery": show_gallery_page()
-elif page == "Register Product": show_register_page()
-elif page == "Sales / POS": show_sales_page()
-elif page == "Order History": show_order_history_page()
-elif page == "Settings": show_settings_page()
+    # Migration Tool (SuperUser Only)
+    if st.session_state.user_role == 'SuperUser':
+        if st.sidebar.button("⚠️ Run Data Migration"):
+            run_data_migration()
 
-st.sidebar.divider()
-st.sidebar.caption("System v1.4 | Order History")
+    if 'edit_mode_id' in st.session_state and st.session_state['edit_mode_id']:
+        st.session_state['nav_selection'] = "Register Product"
+    elif 'nav_selection' not in st.session_state:
+        st.session_state['nav_selection'] = "Gallery"
+
+    # Define Menu
+    menu_options = ["Gallery", "Register Product", "Sales / POS", "Order History", "Settings"]
+    
+    # Admin Menu
+    if st.session_state.user_role == 'SuperUser':
+        menu_options.insert(4, "Admin / Members")
+        
+    page = st.sidebar.radio("Navigate", menu_options, key="nav_selection")
+
+    if page == "Gallery": show_gallery_page()
+    elif page == "Register Product": show_register_page()
+    elif page == "Sales / POS": show_sales_page()
+    elif page == "Order History": show_order_history_page()
+    elif page == "Admin / Members": show_admin_page()
+    elif page == "Settings": show_settings_page()
+
+    st.sidebar.divider()
+    st.sidebar.caption("System v1.4 | Auth Enabled")
+
+

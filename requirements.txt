@@ -3,3 +3,5 @@ sqlalchemy
 pymysql
 redis
 pandas
+requests
+Pillow
